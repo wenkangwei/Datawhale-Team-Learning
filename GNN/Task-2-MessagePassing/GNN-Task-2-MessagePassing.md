@@ -41,7 +41,9 @@ $$
     3. 节点表征与节点属性的区分：遵循被广泛使用的约定，此次组队学习我们也约定，节点属性`data.x`是节点的第0层(GNN输入层)节点表征，第$h$层的节点表征经过一次的节点间信息传递产生第$h+1$层的节点表征。不过，节点属性不单指`data.x`，广义上它就指节点的属性，如节点的度(in-degree, out-degree)等。
 
 
+
 ## 3. MessagePassing Class in PyTorch Geometric
+### 3.1 MessagePassing 的Base Class 函数
 Pytorch Geometric(PyG)提供了MessagePassing基类，它封装了“消息传递”的运行流程。通过继承MessagePassing基类，可以方便地构造消息传递图神经网络。构造一个最简单的消息传递图神经网络类，我们只需定义message()方法（ 𝜙(..) ）、update()方法（ 𝛾(..) ），以及使用的消息聚合方案（aggr="add"、aggr="mean"或aggr="max"。**MessagePassing Base Class中这里最重要的3个函数是：**
 + `MessagePassing.aggregate(...)`：用于处理聚集到节点的信息的函数
 + `MessagePassing.message(...)`：用于搭建传送到 node i的节点消息，相对于𝜙(..)函数
@@ -76,6 +78,49 @@ Pytorch Geometric(PyG)提供了MessagePassing基类，它封装了“消息传�
 
 
 
+### 3.2 MessagePassing 的Base Class 函数
+#### 3.2.1 propagate 函数的输入
+propagate 函数的输入 有edge_index, x (node embedding matrix), 以及其他自定义的输入参数(degree, norm之类的)。其中edge_index的储存形式如下
+$$
+\mathbf{Edge index}=[\begin{array}{lllll}
+    [0 & 0& 1& 4&..8] \\
+    [0& 1& 4& 1& ..9] \\
+    \end{array}]
+$$
+其中Edge_index的shape = [2, amount of edge]. Edge_index[0]第一行是source node的index， Edge_index[1]第二行是target node的index. 
+
+**Note**
+1. 如果edge_index 用 torch tensor来储存，那么propagate函数会分别调用message, aggregate的函数
+2. 如果edge_index 用 torch_sparse的SparseTensor类来储存，那么propagate函数会调用message_and_aggregate的函数而不是两个单独的函数
+3. **当edge_index, x(node embedding)输入到propagate后，它会自动通过 __collect__()函数 把输入解析得到以下参数:**
+    - **如果flow="source_to_target":**
+        + **x_i**: edge_index的target node的index列表(edge_index[1])对应的node embedding向量列表。
+        比如 edge_index的target node列表是 edge_index[1], length = E, 而node embedding的维度为dim, 那么 x_i =x[edge_index[1]]是edge_index[1]所对应的embedding列表， x_i的shape= [E, dim]。
+        举个例子就是 target node 的索引列表是 edge_index[1] = [0, 1, 2]而 E=3, dim=2, 那么 x_i = [[0.5,0.6],[0.1,0.22],[0.2,0.3]]。x_i里面的每一行分别对应target node 0, 1,2的node embedding向量
+        
+        + **deg_i**: edge_index的target node的index列表对应的degree列表。这个和x_i同理
+        + **x_j**：edge_index的source node的edge_index[0]列表对应的node embedding向量列表。
+        + **deg_j**: edge_index的source node的edge_index[0]列表对应的degree列表。这个和x_j同理
+    - **如果flow="target_to_source" 那么有_ i后缀代表source,  _ j后缀代表target node**
+    
+4. 在得到target node的edge_index和 对应的source node的node embedding vectors之后，我们就可以把每个target node对应的所有node embedding向量聚合一起得到target node的信息集合用于搭建 message了
+    
+#### 3.2.2 message 函数的输入
+message 函数输入一般包括: x_i, x_j, deg_i, deg_j, edge_index以及其他自定义的参数输入
+
+#### 3.2.3 aggregate 函数的输入
+aggregate 函数输入除了有 **inputs (来自message函数的输入)** 外 一般还包括: inputs, x_i, x_j, deg_i, deg_j, edge_index以及其他自定义的参数输入。
+#### 3.2.4 message_and_aggregate 函数的输入
+message_and_aggregate 函数输入 一般还包括: x_i, x_j, deg_i, deg_j, edge_index以及其他自定义的参数输入。
+#### 3.2.5 update 函数的输入
+update 函数输入包括inputs以及其他自定义的参数输入。
+
+
+
+```python
+
+```
+
 ## 4. Coding Practice
 ### 4.1 基于 Message Passing的泛式(框架)搭建Graph Convolution Network (GCN)
 
@@ -83,6 +128,12 @@ Pytorch Geometric(PyG)提供了MessagePassing基类，它封装了“消息传�
 $$
 \mathbf{x}_i^{(k)} = \sum_{j \in \mathcal{N}(i) \cup \{ i \}} \frac{1}{\sqrt{\deg(i)} \cdot \sqrt{\deg(j)}} \cdot \left( \mathbf{\Theta} \cdot \mathbf{x}_j^{(k-1)} \right),
 $$
+
+矩阵的形式是
+$$
+\mathbf{X}^{(k)}  = \mathbf{D}^{-0.5}\mathbf{A}\mathbf{D}^{-0.5}\mathbf{X}^{(k-1)}\mathbf{\Theta}
+$$
+
 其中，$\mathbf{x}_i$ 的节点的特征是由它的近邻的node的信息(包括node i自己)进行更新，所以计算时j是节点i的邻居(包括节点i本身)的子集里面的node。 邻接节点的表征$\mathbf{x}_j^{(k-1)}$首先通过与权重矩阵$\mathbf{\Theta}$相乘进行变换，然后按端点的度$\deg(i), \deg(j)$进行归一化处理，最后进行求和。这个公式可以分为以下几个步骤：
 
 1. 向邻接矩阵添加自环边。
@@ -291,7 +342,901 @@ $$
 + MessagePassing 的Base Class里面的propagate()函数可以看成是对 $\gamma(x_i^{k-1}, \square(\phi(...)))$ 更新函数的封装。 这一点可以看看官方文档的[源码](https://pytorch-geometric.readthedocs.io/en/latest/_modules/torch_geometric/nn/conv/message_passing.html#MessagePassing.propagate)
 
 
-#### 5.2 **用MessagePassing 这个BaseClass去实现一个 我自定义的GCN layer**
+
+```python
+
+```
+
+#### 5.2 **用MessagePassing 这个BaseClass去实现一个GCN layer**
+这里逐步实现实现一个GCN， 公式如下:
+
+$$
+\mathbf{x}_i^{(k)} = \sum_{j \in \mathcal{N}(i) \cup \{ i \}} \frac{1}{\sqrt{\deg(i)} \cdot \sqrt{\deg(j)}} \cdot \left( \mathbf{\Theta} \cdot \mathbf{x}_j^{(k-1)} \right),
+$$
+
+这里一些函数定义如下：
++ $\phi(..)$: message函数GCN一样都是linear projection之后用degree进行normalization
++ $\square(..)$ : aggregate 函数用 add
++ $\gamma(..)$: update 函数是直接将aggregate后的结果输出
+
+
+#### 5.2.1 覆写message函数
+要求该函数接收消息传递源节点属性x、目标节点度d
+
+
+```python
+from torch_geometric.datasets import Planetoid
+import torch
+from torch import nn, Tensor
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import add_self_loops, degree
+from torch_sparse import SparseTensor, matmul
+
+
+class GCNConv(MessagePassing):
+    def __init__(self, in_channels, out_channels):
+        super(GCNConv, self).__init__(aggr='add', flow='source_to_target')
+        # "Add" aggregation (Step 5).
+        # flow='source_to_target' 表示消息从源节点传播到目标节点
+        self.lin = torch.nn.Linear(in_channels, out_channels)
+        self.lin2 = torch.nn.Linear(out_channels, out_channels)
+        self.relu = torch.nn.ReLU()
+
+        
+    def propagate(self, edge_index, size=None, **kwargs):
+        # I just copy the source copy from PyG website
+        r"""The initial call to start propagating messages.
+
+        Args:
+            edge_index (Tensor or SparseTensor): A :obj:`torch.LongTensor` or a
+                :obj:`torch_sparse.SparseTensor` that defines the underlying
+                graph connectivity/message passing flow.
+                :obj:`edge_index` holds the indices of a general (sparse)
+                assignment matrix of shape :obj:`[N, M]`.
+                If :obj:`edge_index` is of type :obj:`torch.LongTensor`, its
+                shape must be defined as :obj:`[2, num_messages]`, where
+                messages from nodes in :obj:`edge_index[0]` are sent to
+                nodes in :obj:`edge_index[1]`
+                (in case :obj:`flow="source_to_target"`).
+                If :obj:`edge_index` is of type
+                :obj:`torch_sparse.SparseTensor`, its sparse indices
+                :obj:`(row, col)` should relate to :obj:`row = edge_index[1]`
+                and :obj:`col = edge_index[0]`.
+                The major difference between both formats is that we need to
+                input the *transposed* sparse adjacency matrix into
+                :func:`propagate`.
+            size (tuple, optional): The size :obj:`(N, M)` of the assignment
+                matrix in case :obj:`edge_index` is a :obj:`LongTensor`.
+                If set to :obj:`None`, the size will be automatically inferred
+                and assumed to be quadratic.
+                This argument is ignored in case :obj:`edge_index` is a
+                :obj:`torch_sparse.SparseTensor`. (default: :obj:`None`)
+            **kwargs: Any additional data which is needed to construct and
+                aggregate messages, and to update node embeddings.
+        """
+        size = self.__check_input__(edge_index, size)
+
+        # Run "fused" message and aggregation (if applicable).
+        if (isinstance(edge_index, SparseTensor) and self.fuse
+                and not self.__explain__):
+            coll_dict = self.__collect__(self.__fused_user_args__, edge_index,
+                                         size, kwargs)
+            print("Using self-defined message-passing")
+            msg_aggr_kwargs = self.inspector.distribute(
+                'message_and_aggregate', coll_dict)
+            out = self.message_and_aggregate(edge_index, **msg_aggr_kwargs)
+
+            update_kwargs = self.inspector.distribute('update', coll_dict)
+            return self.update(out, **update_kwargs)
+
+        # Otherwise, run both functions in separation.
+        elif isinstance(edge_index, Tensor) or not self.fuse:
+            coll_dict = self.__collect__(self.__user_args__, edge_index, size,
+                                         kwargs)
+
+            msg_kwargs = self.inspector.distribute('message', coll_dict)
+            #print("Message kwargs: ",msg_kwargs)
+            out = self.message(**msg_kwargs)
+
+            # For `GNNExplainer`, we require a separate message and aggregate
+            # procedure since this allows us to inject the `edge_mask` into the
+            # message passing computation scheme.
+            if self.__explain__:
+                edge_mask = self.__edge_mask__.sigmoid()
+                # Some ops add self-loops to `edge_index`. We need to do the
+                # same for `edge_mask` (but do not train those).
+                if out.size(self.node_dim) != edge_mask.size(0):
+                    loop = edge_mask.new_ones(size[0])
+                    edge_mask = torch.cat([edge_mask, loop], dim=0)
+                assert out.size(self.node_dim) == edge_mask.size(0)
+                out = out * edge_mask.view([-1] + [1] * (out.dim() - 1))
+
+            aggr_kwargs = self.inspector.distribute('aggregate', coll_dict)
+            out = self.aggregate(out, **aggr_kwargs)
+
+            update_kwargs = self.inspector.distribute('update', coll_dict)
+            return self.update(out, **update_kwargs)
+        
+        
+    def forward(self, x, edge_index):
+        # x has shape [N, in_channels]
+        # edge_index has shape [2, E]
+
+        # Step 1: Add self-loops to the adjacency matrix.
+        edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
+
+        # Step 2: Linearly transform node feature matrix.
+        x = self.lin(x)
+
+        # Compute degree.
+        row, col = edge_index
+        deg = degree(col, x.size(0), dtype=x.dtype)
+        
+        return self.propagate(edge_index, x=x, deg=deg.view((-1, 1)))
+        
+
+
+    def message(self, x_j, deg_i,deg_j):
+        # Accoding to __collect__ function 
+        # in https://github.com/rusty1s/pytorch_geometric/blob/master/torch_geometric/nn/conv/message_passing.py
+        # when flow = source_to_target
+        # i= 1, j=0, edge_index_i = edge_index[1] = target, so 
+        # deg_i is degree of target node,  and x_i is target node data
+        # deg_j is degree of source node and  x_j is source 
+        # x_j has shape [E, out_channels]
+        # deg_i has shape [E, 1]
+        
+        
+        # Step 3: Normalize node features.
+        print("--message is called--")
+        print("x_j: ",x_j.shape)
+        print("degree: ", deg_i.shape)
+        print("degree: ",deg_j.shape)
+        print()
+        # check if degrees of source nodes and degrees of target nodes are equal
+        print(torch.eq(deg_i, deg_j).all())
+        # compute normalization
+        deg_i = deg_i.pow(-0.5)
+        deg_j = deg_j.pow(-0.5)
+        norm = deg_i * deg_j
+        
+        return norm.view(-1, 1) * x_j
+
+dataset = Planetoid(root='dataset/Cora', name='Cora')
+data = dataset[0]
+
+net = GCNConv(data.num_features, 64)
+h_nodes = net(data.x, data.edge_index)
+print("H_nodes: ", h_nodes.shape)
+h_nodes
+```
+
+    --message is called--
+    x_j:  torch.Size([13264, 64])
+    degree:  torch.Size([13264, 1])
+    degree:  torch.Size([13264, 1])
+    
+    tensor(False)
+    H_nodes:  torch.Size([2708, 64])
+
+
+
+
+
+    tensor([[-0.0336, -0.0263, -0.0141,  ..., -0.0157, -0.0207,  0.0233],
+            [-0.0204, -0.0698, -0.0737,  ..., -0.0233,  0.0268, -0.0347],
+            [-0.0437, -0.0602, -0.0162,  ...,  0.0243,  0.0348, -0.0054],
+            ...,
+            [-0.0067, -0.0016, -0.0004,  ...,  0.0237, -0.0289,  0.0044],
+            [ 0.0061,  0.0198, -0.0076,  ...,  0.0065,  0.0373, -0.0187],
+            [ 0.0080,  0.0146, -0.0173,  ..., -0.0250,  0.0205,  0.0163]],
+           grad_fn=<ScatterAddBackward>)
+
+
+
+
+```python
+
+```
+
+#### 5.2.2 在第一个类的基础上，再覆写aggregate函数
+要求不能调用super类的aggregate函数，并且不能直接复制super类的aggregate函数内容。
+
+
+```python
+from torch_geometric.datasets import Planetoid
+import torch
+from torch import nn, Tensor
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import add_self_loops, degree
+from torch_sparse import SparseTensor, matmul
+
+
+class GCNConv(MessagePassing):
+    def __init__(self, in_channels, out_channels):
+        super(GCNConv, self).__init__(aggr='add', flow='source_to_target')
+        # "Add" aggregation (Step 5).
+        # flow='source_to_target' 表示消息从源节点传播到目标节点
+        self.lin = torch.nn.Linear(in_channels, out_channels)
+        self.lin2 = torch.nn.Linear(out_channels, out_channels)
+        self.relu = torch.nn.ReLU()
+
+        
+    def propagate(self, edge_index, size=None, **kwargs):
+        # I just copy the source copy from PyG website
+        r"""The initial call to start propagating messages.
+
+        Args:
+            edge_index (Tensor or SparseTensor): A :obj:`torch.LongTensor` or a
+                :obj:`torch_sparse.SparseTensor` that defines the underlying
+                graph connectivity/message passing flow.
+                :obj:`edge_index` holds the indices of a general (sparse)
+                assignment matrix of shape :obj:`[N, M]`.
+                If :obj:`edge_index` is of type :obj:`torch.LongTensor`, its
+                shape must be defined as :obj:`[2, num_messages]`, where
+                messages from nodes in :obj:`edge_index[0]` are sent to
+                nodes in :obj:`edge_index[1]`
+                (in case :obj:`flow="source_to_target"`).
+                If :obj:`edge_index` is of type
+                :obj:`torch_sparse.SparseTensor`, its sparse indices
+                :obj:`(row, col)` should relate to :obj:`row = edge_index[1]`
+                and :obj:`col = edge_index[0]`.
+                The major difference between both formats is that we need to
+                input the *transposed* sparse adjacency matrix into
+                :func:`propagate`.
+            size (tuple, optional): The size :obj:`(N, M)` of the assignment
+                matrix in case :obj:`edge_index` is a :obj:`LongTensor`.
+                If set to :obj:`None`, the size will be automatically inferred
+                and assumed to be quadratic.
+                This argument is ignored in case :obj:`edge_index` is a
+                :obj:`torch_sparse.SparseTensor`. (default: :obj:`None`)
+            **kwargs: Any additional data which is needed to construct and
+                aggregate messages, and to update node embeddings.
+        """
+        size = self.__check_input__(edge_index, size)
+
+        # Run "fused" message and aggregation (if applicable).
+        if (isinstance(edge_index, SparseTensor) and self.fuse
+                and not self.__explain__):
+            coll_dict = self.__collect__(self.__fused_user_args__, edge_index,
+                                         size, kwargs)
+            print("Using self-defined message-passing")
+            msg_aggr_kwargs = self.inspector.distribute(
+                'message_and_aggregate', coll_dict)
+            out = self.message_and_aggregate(edge_index, **msg_aggr_kwargs)
+
+            update_kwargs = self.inspector.distribute('update', coll_dict)
+            return self.update(out, **update_kwargs)
+
+        # Otherwise, run both functions in separation.
+        elif isinstance(edge_index, Tensor) or not self.fuse:
+            coll_dict = self.__collect__(self.__user_args__, edge_index, size,
+                                         kwargs)
+
+            msg_kwargs = self.inspector.distribute('message', coll_dict)
+            #print("Message kwargs: ",msg_kwargs)
+            out = self.message(**msg_kwargs)
+
+            # For `GNNExplainer`, we require a separate message and aggregate
+            # procedure since this allows us to inject the `edge_mask` into the
+            # message passing computation scheme.
+            if self.__explain__:
+                edge_mask = self.__edge_mask__.sigmoid()
+                # Some ops add self-loops to `edge_index`. We need to do the
+                # same for `edge_mask` (but do not train those).
+                if out.size(self.node_dim) != edge_mask.size(0):
+                    loop = edge_mask.new_ones(size[0])
+                    edge_mask = torch.cat([edge_mask, loop], dim=0)
+                assert out.size(self.node_dim) == edge_mask.size(0)
+                out = out * edge_mask.view([-1] + [1] * (out.dim() - 1))
+
+            aggr_kwargs = self.inspector.distribute('aggregate', coll_dict)
+            out = self.aggregate(out, **aggr_kwargs)
+
+            update_kwargs = self.inspector.distribute('update', coll_dict)
+            return self.update(out, **update_kwargs)
+        
+        
+    def forward(self, x, edge_index):
+        # x has shape [N, in_channels]
+        # edge_index has shape [2, E]
+
+        # Step 1: Add self-loops to the adjacency matrix.
+        edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
+
+        # Step 2: Linearly transform node feature matrix.
+        x = self.lin(x)
+
+        # Compute degree.
+        row, col = edge_index
+        deg = degree(col, x.size(0), dtype=x.dtype)
+        
+        return self.propagate(edge_index, x=x, deg=deg.view((-1, 1)))
+        
+
+
+    def message(self, x_j, deg_i,deg_j):
+        # Accoding to __collect__ function 
+        # in https://github.com/rusty1s/pytorch_geometric/blob/master/torch_geometric/nn/conv/message_passing.py
+        # when flow = source_to_target
+        # i= 1, j=0, edge_index_i = edge_index[1] = target, so 
+        # deg_i is degree of target node,  and x_i is target node data
+        # deg_j is degree of source node and  x_j is source 
+        # x_j has shape [E, out_channels]
+        # deg_i has shape [E, 1]
+        
+        
+        # Step 3: Normalize node features.
+        print("--message is called--")
+        print("x_j: ",x_j.shape)
+        print("degree: ", deg_i.shape)
+        print("degree: ",deg_j.shape)
+        print()
+        # check if degrees of source nodes and degrees of target nodes are equal
+        print(torch.eq(deg_i, deg_j).all())
+        # compute normalization
+        deg_i = deg_i.pow(-0.5)
+        deg_j = deg_j.pow(-0.5)
+        norm = deg_i * deg_j
+        
+        return norm.view(-1, 1) * x_j
+    
+    def aggregate(self, inputs, index, ptr, dim_size):
+        #from __collect__() function we know that
+        # when flow = source_to_target
+        # out['index'] = out['edge_index_i']  -> input index = edge_index[i] = edge_index[1] = index of target node
+        # inputs: embedding vectors of source nodes
+        # inputs: the outputs from message function, the normalized source node embeding with shape [E, dim of embedding]
+        
+        print("--aggregate` is called--")
+        print('self.aggr:', self.aggr)
+        print('ptr: ', ptr)
+        print('dim_size: ',dim_size)
+        print("inputs: ", inputs.shape)
+        print("index: ",index.shape, len(index.unique()))
+        print()
+        uni_idx = index.unique()
+        uni_idx.sort()
+        
+        res= []
+        # find all unique target node index
+        # for each target node, aggregate(sum or mean ) the information from source node to the target node
+        # and obtain target node embedding
+        for i in uni_idx:
+            # i is the index of target node
+            neighbors = inputs[index == i]
+            # aggregate along different vectors of different nodes
+            if self.aggr=="mean":
+                agg_res = neighbors.mean(axis=0)
+            else:
+                agg_res = neighbors.sum(axis=0)
+            res.append(agg_res)
+        res = torch.stack(res)
+        return res 
+    
+dataset = Planetoid(root='dataset/Cora', name='Cora')
+data = dataset[0]
+
+net = GCNConv(data.num_features, 64)
+h_nodes = net(data.x, data.edge_index)
+print("H_nodes: ", h_nodes.shape)
+h_nodes
+```
+
+    --message is called--
+    x_j:  torch.Size([13264, 64])
+    degree:  torch.Size([13264, 1])
+    degree:  torch.Size([13264, 1])
+    
+    tensor(False)
+    --aggregate` is called--
+    self.aggr: add
+    ptr:  None
+    dim_size:  2708
+    inputs:  torch.Size([13264, 64])
+    index:  torch.Size([13264]) 2708
+    
+    H_nodes:  torch.Size([2708, 64])
+
+
+
+
+
+    tensor([[-0.0141,  0.0188,  0.0067,  ..., -0.0314,  0.0296, -0.0301],
+            [ 0.0056, -0.0510,  0.0796,  ..., -0.0591,  0.0362,  0.0113],
+            [-0.0034,  0.0314,  0.0107,  ..., -0.0433,  0.0407,  0.0185],
+            ...,
+            [ 0.0280,  0.0239,  0.0307,  ..., -0.0530, -0.0522,  0.0293],
+            [-0.0094,  0.0380, -0.0108,  ..., -0.0115,  0.0182, -0.0060],
+            [-0.0058, -0.0127, -0.0221,  ..., -0.0027,  0.0008, -0.0052]],
+           grad_fn=<StackBackward>)
+
+
+
+
+```python
+
+```
+
+#### 5.2.3 在第二个类的基础上，再覆写update函数
+要求对节点信息做一层线性变换。
+
+
+```python
+from torch_geometric.datasets import Planetoid
+import torch
+from torch import nn, Tensor
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import add_self_loops, degree
+from torch_sparse import SparseTensor, matmul
+
+
+class GCNConv(MessagePassing):
+    def __init__(self, in_channels, out_channels):
+        super(GCNConv, self).__init__(aggr='add', flow='source_to_target')
+        # "Add" aggregation (Step 5).
+        # flow='source_to_target' 表示消息从源节点传播到目标节点
+        self.lin = torch.nn.Linear(in_channels, out_channels)
+        self.lin2 = torch.nn.Linear(out_channels, out_channels)
+        self.relu = torch.nn.ReLU()
+
+        
+    def propagate(self, edge_index, size=None, **kwargs):
+        # I just copy the source copy from PyG website
+        r"""The initial call to start propagating messages.
+
+        Args:
+            edge_index (Tensor or SparseTensor): A :obj:`torch.LongTensor` or a
+                :obj:`torch_sparse.SparseTensor` that defines the underlying
+                graph connectivity/message passing flow.
+                :obj:`edge_index` holds the indices of a general (sparse)
+                assignment matrix of shape :obj:`[N, M]`.
+                If :obj:`edge_index` is of type :obj:`torch.LongTensor`, its
+                shape must be defined as :obj:`[2, num_messages]`, where
+                messages from nodes in :obj:`edge_index[0]` are sent to
+                nodes in :obj:`edge_index[1]`
+                (in case :obj:`flow="source_to_target"`).
+                If :obj:`edge_index` is of type
+                :obj:`torch_sparse.SparseTensor`, its sparse indices
+                :obj:`(row, col)` should relate to :obj:`row = edge_index[1]`
+                and :obj:`col = edge_index[0]`.
+                The major difference between both formats is that we need to
+                input the *transposed* sparse adjacency matrix into
+                :func:`propagate`.
+            size (tuple, optional): The size :obj:`(N, M)` of the assignment
+                matrix in case :obj:`edge_index` is a :obj:`LongTensor`.
+                If set to :obj:`None`, the size will be automatically inferred
+                and assumed to be quadratic.
+                This argument is ignored in case :obj:`edge_index` is a
+                :obj:`torch_sparse.SparseTensor`. (default: :obj:`None`)
+            **kwargs: Any additional data which is needed to construct and
+                aggregate messages, and to update node embeddings.
+        """
+        size = self.__check_input__(edge_index, size)
+
+        # Run "fused" message and aggregation (if applicable).
+        if (isinstance(edge_index, SparseTensor) and self.fuse
+                and not self.__explain__):
+            coll_dict = self.__collect__(self.__fused_user_args__, edge_index,
+                                         size, kwargs)
+            print("Using self-defined message-passing")
+            msg_aggr_kwargs = self.inspector.distribute(
+                'message_and_aggregate', coll_dict)
+            out = self.message_and_aggregate(edge_index, **msg_aggr_kwargs)
+
+            update_kwargs = self.inspector.distribute('update', coll_dict)
+            return self.update(out, **update_kwargs)
+
+        # Otherwise, run both functions in separation.
+        elif isinstance(edge_index, Tensor) or not self.fuse:
+            coll_dict = self.__collect__(self.__user_args__, edge_index, size,
+                                         kwargs)
+
+            msg_kwargs = self.inspector.distribute('message', coll_dict)
+            #print("Message kwargs: ",msg_kwargs)
+            out = self.message(**msg_kwargs)
+
+            # For `GNNExplainer`, we require a separate message and aggregate
+            # procedure since this allows us to inject the `edge_mask` into the
+            # message passing computation scheme.
+            if self.__explain__:
+                edge_mask = self.__edge_mask__.sigmoid()
+                # Some ops add self-loops to `edge_index`. We need to do the
+                # same for `edge_mask` (but do not train those).
+                if out.size(self.node_dim) != edge_mask.size(0):
+                    loop = edge_mask.new_ones(size[0])
+                    edge_mask = torch.cat([edge_mask, loop], dim=0)
+                assert out.size(self.node_dim) == edge_mask.size(0)
+                out = out * edge_mask.view([-1] + [1] * (out.dim() - 1))
+
+            aggr_kwargs = self.inspector.distribute('aggregate', coll_dict)
+            out = self.aggregate(out, **aggr_kwargs)
+
+            update_kwargs = self.inspector.distribute('update', coll_dict)
+            return self.update(out, **update_kwargs)
+        
+        
+    def forward(self, x, edge_index):
+        # x has shape [N, in_channels]
+        # edge_index has shape [2, E]
+
+        # Step 1: Add self-loops to the adjacency matrix.
+        edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
+
+        # Step 2: Linearly transform node feature matrix.
+        x = self.lin(x)
+
+        # Compute degree.
+        row, col = edge_index
+        deg = degree(col, x.size(0), dtype=x.dtype)
+        
+        return self.propagate(edge_index, x=x, deg=deg.view((-1, 1)))
+        
+
+
+    def message(self, x_j, deg_i,deg_j):
+        # Accoding to __collect__ function 
+        # in https://github.com/rusty1s/pytorch_geometric/blob/master/torch_geometric/nn/conv/message_passing.py
+        # when flow = source_to_target
+        # i= 1, j=0, edge_index_i = edge_index[1] = target, so 
+        # deg_i is degree of target node,  and x_i is target node data
+        # deg_j is degree of source node and  x_j is source 
+        # x_j has shape [E, out_channels]
+        # deg_i has shape [E, 1]
+        
+        
+        # Step 3: Normalize node features.
+        print("--message is called--")
+        print("x_j: ",x_j.shape)
+        print("degree: ", deg_i.shape)
+        print("degree: ",deg_j.shape)
+        print()
+        # check if degrees of source nodes and degrees of target nodes are equal
+        print(torch.eq(deg_i, deg_j).all())
+        # compute normalization
+        deg_i = deg_i.pow(-0.5)
+        deg_j = deg_j.pow(-0.5)
+        norm = deg_i * deg_j
+        
+        return norm.view(-1, 1) * x_j
+    
+    def aggregate(self, inputs, index, ptr, dim_size):
+        #from __collect__() function we know that
+        # when flow = source_to_target
+        # out['index'] = out['edge_index_i']  -> input index = edge_index[i] = edge_index[1] = index of target node
+        # inputs: embedding vectors of source nodes
+        # inputs: the outputs from message function, the normalized source node embeding with shape [E, dim of embedding]
+        
+        print("--aggregate` is called--")
+        print('self.aggr:', self.aggr)
+        print('ptr: ', ptr)
+        print('dim_size: ',dim_size)
+        print("inputs: ", inputs.shape)
+        print("index: ",index.shape, len(index.unique()))
+        print()
+        uni_idx = index.unique()
+        uni_idx.sort()
+        
+        res= []
+        # find all unique target node index
+        # for each target node, aggregate(sum or mean ) the information from source node to the target node
+        # and obtain target node embedding
+        for i in uni_idx:
+            # i is the index of target node
+            neighbors = inputs[index == i]
+            # aggregate along different vectors of different nodes
+            if self.aggr=="mean":
+                agg_res = neighbors.mean(axis=0)
+            else:
+                agg_res = neighbors.sum(axis=0)
+            res.append(agg_res)
+        res = torch.stack(res)
+        return res 
+    
+    def update(self,inputs, deg ):
+        print("--update func is called--")
+        return self.lin2(inputs)
+
+dataset = Planetoid(root='dataset/Cora', name='Cora')
+data = dataset[0]
+
+net = GCNConv(data.num_features, 64)
+h_nodes = net(data.x, data.edge_index)
+print("H_nodes: ", h_nodes.shape)
+h_nodes
+```
+
+    --message is called--
+    x_j:  torch.Size([13264, 64])
+    degree:  torch.Size([13264, 1])
+    degree:  torch.Size([13264, 1])
+    tensor(False)
+    --aggregate` is called--
+    self.aggr: add
+    ptr:  None
+    dim_size:  2708
+    inputs:  torch.Size([13264, 64])
+    index:  torch.Size([13264]) 2708
+    
+    --update func is called--
+    H_nodes:  torch.Size([2708, 64])
+
+
+
+
+
+    tensor([[-0.0139, -0.0065,  0.1316,  ...,  0.0401, -0.1439, -0.0718],
+            [-0.0333, -0.0545,  0.1637,  ..., -0.0098, -0.1503, -0.0837],
+            [-0.0245, -0.0277,  0.1248,  ...,  0.0264, -0.1423, -0.0829],
+            ...,
+            [-0.0678, -0.0061,  0.1510,  ...,  0.0332, -0.1420, -0.0876],
+            [-0.0289, -0.0100,  0.1211,  ...,  0.0339, -0.1905, -0.0764],
+            [-0.0255, -0.0036,  0.1290,  ...,  0.0366, -0.1623, -0.0631]],
+           grad_fn=<AddmmBackward>)
+
+
+
+
+```python
+
+```
+
+#### 5.2.4 在第三个类的基础上，再覆写message_and_aggregate函数
+要求在这一个函数中实现前面message函数和aggregate函数的功能。
+
+
+```python
+from torch_geometric.datasets import Planetoid
+import torch
+from torch import nn, Tensor
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import add_self_loops, degree
+from torch_sparse import SparseTensor, matmul
+
+
+class GCNConv(MessagePassing):
+    def __init__(self, in_channels, out_channels):
+        super(GCNConv, self).__init__(aggr='add', flow='source_to_target')
+        # "Add" aggregation (Step 5).
+        # flow='source_to_target' 表示消息从源节点传播到目标节点
+        self.lin = torch.nn.Linear(in_channels, out_channels)
+        self.lin2 = torch.nn.Linear(out_channels, out_channels)
+        self.relu = torch.nn.ReLU()
+
+        
+    def propagate(self, edge_index, size=None, **kwargs):
+        # I just copy the source copy from PyG website
+        r"""The initial call to start propagating messages.
+
+        Args:
+            edge_index (Tensor or SparseTensor): A :obj:`torch.LongTensor` or a
+                :obj:`torch_sparse.SparseTensor` that defines the underlying
+                graph connectivity/message passing flow.
+                :obj:`edge_index` holds the indices of a general (sparse)
+                assignment matrix of shape :obj:`[N, M]`.
+                If :obj:`edge_index` is of type :obj:`torch.LongTensor`, its
+                shape must be defined as :obj:`[2, num_messages]`, where
+                messages from nodes in :obj:`edge_index[0]` are sent to
+                nodes in :obj:`edge_index[1]`
+                (in case :obj:`flow="source_to_target"`).
+                If :obj:`edge_index` is of type
+                :obj:`torch_sparse.SparseTensor`, its sparse indices
+                :obj:`(row, col)` should relate to :obj:`row = edge_index[1]`
+                and :obj:`col = edge_index[0]`.
+                The major difference between both formats is that we need to
+                input the *transposed* sparse adjacency matrix into
+                :func:`propagate`.
+            size (tuple, optional): The size :obj:`(N, M)` of the assignment
+                matrix in case :obj:`edge_index` is a :obj:`LongTensor`.
+                If set to :obj:`None`, the size will be automatically inferred
+                and assumed to be quadratic.
+                This argument is ignored in case :obj:`edge_index` is a
+                :obj:`torch_sparse.SparseTensor`. (default: :obj:`None`)
+            **kwargs: Any additional data which is needed to construct and
+                aggregate messages, and to update node embeddings.
+        """
+        size = self.__check_input__(edge_index, size)
+
+        # Run "fused" message and aggregation (if applicable).
+        if (isinstance(edge_index, SparseTensor) and self.fuse
+                and not self.__explain__):
+            coll_dict = self.__collect__(self.__fused_user_args__, edge_index,
+                                         size, kwargs)
+            #print("Using self-defined message-passing")
+            msg_aggr_kwargs = self.inspector.distribute(
+                'message_and_aggregate', coll_dict)
+            out = self.message_and_aggregate(edge_index, **msg_aggr_kwargs)
+
+            update_kwargs = self.inspector.distribute('update', coll_dict)
+            return self.update(out, **update_kwargs)
+
+        # Otherwise, run both functions in separation.
+        elif isinstance(edge_index, Tensor) or not self.fuse:
+            coll_dict = self.__collect__(self.__user_args__, edge_index, size,
+                                         kwargs)
+
+            msg_kwargs = self.inspector.distribute('message', coll_dict)
+            #print("Message kwargs: ",msg_kwargs)
+            out = self.message(**msg_kwargs)
+
+            # For `GNNExplainer`, we require a separate message and aggregate
+            # procedure since this allows us to inject the `edge_mask` into the
+            # message passing computation scheme.
+            if self.__explain__:
+                edge_mask = self.__edge_mask__.sigmoid()
+                # Some ops add self-loops to `edge_index`. We need to do the
+                # same for `edge_mask` (but do not train those).
+                if out.size(self.node_dim) != edge_mask.size(0):
+                    loop = edge_mask.new_ones(size[0])
+                    edge_mask = torch.cat([edge_mask, loop], dim=0)
+                assert out.size(self.node_dim) == edge_mask.size(0)
+                out = out * edge_mask.view([-1] + [1] * (out.dim() - 1))
+
+            aggr_kwargs = self.inspector.distribute('aggregate', coll_dict)
+            out = self.aggregate(out, **aggr_kwargs)
+
+            update_kwargs = self.inspector.distribute('update', coll_dict)
+            return self.update(out, **update_kwargs)
+        
+        
+    def forward(self, x, edge_index):
+        # x has shape [N, in_channels]
+        # edge_index has shape [2, E]
+
+        # Step 1: Add self-loops to the adjacency matrix.
+        edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
+
+        # Step 2: Linearly transform node feature matrix.
+        x = self.lin(x)
+
+        # Compute degree.
+        row, col = edge_index
+        deg = degree(col, x.size(0), dtype=x.dtype)
+        adjmat = SparseTensor(row=edge_index[0], col=edge_index[1], value=torch.ones(edge_index.shape[1]))
+        
+        return self.propagate(adjmat, x=x, deg=deg.view((-1, 1)))
+        
+
+
+    def message(self, x_j, deg_i,deg_j):
+        # Accoding to __collect__ function 
+        # in https://github.com/rusty1s/pytorch_geometric/blob/master/torch_geometric/nn/conv/message_passing.py
+        # when flow = source_to_target
+        # i= 1, j=0, edge_index_i = edge_index[1] = target, so 
+        # deg_i is degree of target node,  and x_i is target node data
+        # deg_j is degree of source node and  x_j is source 
+        # x_j has shape [E, out_channels]
+        # deg_i has shape [E, 1]
+        
+        
+        # Step 3: Normalize node features.
+        print("--message is called--")
+        print("x_j: ",x_j.shape)
+        print("degree: ", deg_i.shape)
+        print("degree: ",deg_j.shape)
+        print()
+        # check if degrees of source nodes and degrees of target nodes are equal
+        print(torch.eq(deg_i, deg_j).all())
+        # compute normalization
+        deg_i = deg_i.pow(-0.5)
+        deg_j = deg_j.pow(-0.5)
+        norm = deg_i * deg_j
+        
+        return norm.view(-1, 1) * x_j
+    
+    def aggregate(self, inputs, index, ptr, dim_size):
+        #from __collect__() function we know that
+        # when flow = source_to_target
+        # out['index'] = out['edge_index_i']  -> input index = edge_index[i] = edge_index[1] = index of target node
+        # inputs: embedding vectors of source nodes
+        # inputs: the outputs from message function, the normalized source node embeding with shape [E, dim of embedding]
+        
+        print("--aggregate` is called--")
+        print('self.aggr:', self.aggr)
+        print('ptr: ', ptr)
+        print('dim_size: ',dim_size)
+        print("inputs: ", inputs.shape)
+        print("index: ",index.shape, len(index.unique()))
+        print()
+        uni_idx = index.unique()
+        uni_idx.sort()
+        
+        res= []
+        # find all unique target node index
+        # for each target node, aggregate(sum or mean ) the information from source node to the target node
+        # and obtain target node embedding
+        for i in uni_idx:
+            # i is the index of target node
+            neighbors = inputs[index == i]
+            # aggregate along different vectors of different nodes
+            if self.aggr=="mean":
+                agg_res = neighbors.mean(axis=0)
+            else:
+                agg_res = neighbors.sum(axis=0)
+            res.append(agg_res)
+        res = torch.stack(res)
+        return res 
+    
+    
+    def message_and_aggregate(self, adj_t, x_j, index,deg_i, deg_j):
+        # note: 
+        # adj_t: adjacency matrix
+        # norm: normalization coefficient 1/sqrt(deg_i)*sqrt(deg_j)
+        # number of '1' in adj_t = length of norm
+        
+        ## Print something to debug
+        #print('`message_and_aggregate` is called')
+        #print("adj_t: ",adj_t)
+        #print("deg:", deg)
+        print("--message_and_aggregate is called --")
+
+        # Step3:  compute normalization
+        deg_i = deg_i.pow(-0.5)
+        deg_j = deg_j.pow(-0.5)
+        norm = deg_i * deg_j
+        
+        # Step4: compute normalized message
+        inputs = norm.view(-1, 1) * x_j
+        
+        # Step5: aggregate function sum
+        uni_idx = index.unique()
+        uni_idx.sort()
+        
+        res= []
+        # find all unique target node index
+        # for each target node, aggregate(sum or mean ) the information from source node to the target node
+        # and obtain target node embedding
+        for i in uni_idx:
+            # i is the index of target node
+            neighbors = inputs[index == i]
+            # aggregate along different vectors of different nodes
+            if self.aggr=="mean":
+                agg_res = neighbors.mean(axis=0)
+            else:
+                agg_res = neighbors.sum(axis=0)
+            res.append(agg_res)
+        res = torch.stack(res)
+        
+        return res
+    
+    def update(self,inputs, deg ):
+        print("--update func is called--")
+        return self.lin2(inputs)
+
+dataset = Planetoid(root='dataset/Cora', name='Cora')
+data = dataset[0]
+
+net = GCNConv(data.num_features, 64)
+h_nodes = net(data.x, data.edge_index)
+print("H_nodes: ", h_nodes.shape)
+h_nodes
+```
+
+    --message_and_aggregate is called --
+    --update func is called--
+    H_nodes:  torch.Size([2708, 64])
+
+
+
+
+
+    tensor([[-0.0301, -0.0607, -0.0843,  ..., -0.0092,  0.0735,  0.1196],
+            [-0.0287, -0.0805, -0.0924,  ..., -0.0665,  0.0596,  0.0680],
+            [-0.0236, -0.0952, -0.1220,  ..., -0.0735,  0.0296,  0.0909],
+            ...,
+            [-0.0257, -0.0769, -0.0840,  ..., -0.0068,  0.0807,  0.1330],
+            [-0.0402, -0.0765, -0.1098,  ..., -0.0396,  0.0407,  0.1058],
+            [-0.0421, -0.0787, -0.1024,  ..., -0.0455,  0.0361,  0.1054]],
+           grad_fn=<AddmmBackward>)
+
+
+
+
+```python
+
+```
+
+#### 5.3 **设计自定义一个GCN layer**
 这里我自定义的GCN layer公式如下：
 $$
 \mathbf{x}_i^{(k)} = \sigma(\frac{1}{|\mathcal{N}(i)|+1} \times \sum_{j \in \mathcal{N}(i) \cup \{ i \}} \frac{1}{\sqrt{\deg(i)} \cdot \sqrt{\deg(j)}} \cdot \left( \mathbf{\Theta} \cdot \mathbf{x}_j^{(k-1)} \right) ) +  \mathbf{\Theta}  \cdot \mathbf{x}_i^{(k-1)} ,
@@ -314,9 +1259,9 @@ from torch_geometric.utils import add_self_loops, degree
 from torch_sparse import SparseTensor, matmul
 
 
-class GCNConv(MessagePassing):
+class MyGCNConv(MessagePassing):
     def __init__(self, in_channels, out_channels):
-        super(GCNConv, self).__init__(aggr='mean', flow='source_to_target')
+        super(MyGCNConv, self).__init__(aggr='mean', flow='source_to_target')
         # "Add" aggregation (Step 5).
         # flow='source_to_target' 表示消息从源节点传播到目标节点
         self.lin = torch.nn.Linear(in_channels, out_channels)
@@ -428,10 +1373,11 @@ class GCNConv(MessagePassing):
         return self.propagate(adjmat, x=x, norm=norm, deg=deg.view((-1, 1)))
 
 
-    def message(self, x_j, norm, deg_i=1):
+    def message(self, x_j, norm, deg_i):
         # x_j has shape [E, out_channels]
         # deg_i has shape [E, 1]
         # Step 4: Normalize node features.
+        
         return norm.view(-1, 1) * x_j * deg_i
 
     def aggregate(self, inputs, index, ptr, dim_size):
@@ -474,7 +1420,7 @@ class GCNConv(MessagePassing):
 dataset = Planetoid(root='dataset/Cora', name='Cora')
 data = dataset[0]
 
-net = GCNConv(data.num_features, 64)
+net = MyGCNConv(data.num_features, 64)
 h_nodes = net(data.x, data.edge_index)
 
 ```
@@ -500,26 +1446,21 @@ h_nodes
 
 
 
-    tensor([[ 1.1262e-04, -6.0657e-02, -2.5644e-02,  ...,  1.2791e-02,
-              2.4094e-02,  8.4488e-02],
-            [ 9.5781e-02,  3.0109e-02,  1.0536e-01,  ...,  5.9062e-02,
-              6.5623e-02,  2.2322e-02],
-            [ 1.1685e-01,  1.9822e-02,  1.5696e-01,  ...,  7.2434e-02,
-             -1.8062e-02, -2.3522e-02],
+    tensor([[-2.4017e-02,  4.7570e-02,  1.1954e-02,  ...,  1.3043e-02,
+              2.0967e-02, -8.4416e-02],
+            [-8.5681e-02,  1.2029e-01,  1.0756e-01,  ...,  5.4046e-02,
+             -8.9611e-02, -1.9092e-01],
+            [ 6.2691e-02, -2.7604e-02, -6.0106e-02,  ..., -3.0790e-05,
+              7.8295e-03, -7.2708e-02],
             ...,
-            [ 8.3955e-02, -1.9041e-03,  8.8832e-02,  ...,  8.1169e-02,
-             -2.3039e-02,  7.6098e-02],
-            [-6.5679e-03,  9.7862e-03,  3.8410e-02,  ..., -3.0759e-02,
-             -5.3772e-03,  1.5986e-01],
-            [ 1.6175e-01, -2.3304e-02, -5.7581e-02,  ...,  3.2008e-02,
-             -1.7487e-02,  3.8593e-02]], grad_fn=<AddBackward0>)
+            [ 2.0562e-02,  6.4994e-02,  1.0240e-01,  ..., -3.2108e-03,
+              6.4759e-02,  1.3680e-02],
+            [-1.9234e-02, -2.0179e-02,  3.0165e-02,  ..., -1.4412e-01,
+             -4.2793e-02, -5.4195e-02],
+            [-2.6318e-02, -2.6606e-02,  9.8404e-02,  ..., -5.1031e-02,
+             -2.9973e-02,  1.8722e-02]], grad_fn=<AddBackward0>)
 
 
-
-
-```python
-
-```
 
 
 ```python
