@@ -563,6 +563,687 @@ df_res
 ```
 
 
+```python
+
+```
+
+
+```python
+import torch
+import torch.nn.functional as F
+from torch.nn import ModuleList
+from tqdm import tqdm
+from torch_geometric.datasets import Reddit
+from torch_geometric.data import ClusterData, ClusterLoader, NeighborSampler
+from torch_geometric.nn import SAGEConv
+import time
+import datetime
+import pandas as pd
+
+class Net(torch.nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(Net, self).__init__()
+        self.convs = ModuleList(
+            [SAGEConv(in_channels, 128),
+             SAGEConv(128, out_channels)])
+
+    def forward(self, x, edge_index):
+        for i, conv in enumerate(self.convs):
+            x = conv(x, edge_index)
+            if i != len(self.convs) - 1:
+                x = F.relu(x)
+                x = F.dropout(x, p=0.5, training=self.training)
+        return F.log_softmax(x, dim=-1)
+
+    def inference(self, x_all):
+        pbar = tqdm(total=x_all.size(0) * len(self.convs))
+        pbar.set_description('Evaluating')
+
+        # Compute representations of nodes layer by layer, using *all*
+        # available edges. This leads to faster computation in contrast to
+        # immediately computing the final representations of each batch.
+        for i, conv in enumerate(self.convs):
+            xs = []
+            for batch_size, n_id, adj in subgraph_loader:
+                edge_index, _, size = adj.to(device)
+                x = x_all[n_id].to(device)
+                x_target = x[:size[1]]
+                x = conv((x, x_target), edge_index)
+                if i != len(self.convs) - 1:
+                    x = F.relu(x)
+                xs.append(x.cpu())
+
+                pbar.update(batch_size)
+
+            x_all = torch.cat(xs, dim=0)
+
+        pbar.close()
+
+        return x_all
+
+    
+    
+class ClusterGCNNet(torch.nn.Module):
+    def __init__(self, in_channels, out_channels,hidden_dim= 128,num_layers=4):
+        super(ClusterGCNNet, self).__init__()
+        # GraphSAGE layer
+        # 这里参考了 原paper里面的4-layer的设定 + 128 hidden units
+        layer_ls=[SAGEConv(in_channels, hidden_dim)]
+        if num_layers <=2:
+            layer_ls += [SAGEConv(hidden_dim, hidden_dim) for i in range(num_layers-2)]
+        layer_ls.append(SAGEConv(hidden_dim, out_channels))
+        self.convs = ModuleList(layer_ls)
+
+    def forward(self, x, edge_index):
+        for i, conv in enumerate(self.convs):
+            x = conv(x, edge_index)
+            if i != len(self.convs) - 1:
+                x = F.relu(x)
+                x = F.dropout(x, p=0.5, training=self.training)
+        return F.log_softmax(x, dim=-1)
+
+    def inference(self, x_all):
+        pbar = tqdm(total=x_all.size(0) * len(self.convs))
+        pbar.set_description('Evaluating')
+
+        # Compute representations of nodes layer by layer, using *all*
+        # available edges. This leads to faster computation in contrast to
+        # immediately computing the final representations of each batch.
+        
+        
+        for i, conv in enumerate(self.convs):
+            xs = []
+            for batch_size, n_id, adj in subgraph_loader:
+                edge_index, _, size = adj.to(device)
+                x = x_all[n_id].to(device)
+                x_target = x[:size[1]]
+                x = conv((x, x_target), edge_index)
+                if i != len(self.convs) - 1:
+                    x = F.relu(x)
+                xs.append(x.cpu())
+
+                pbar.update(batch_size)
+
+            x_all = torch.cat(xs, dim=0)
+
+        pbar.close()
+
+        return x_all
+
+
+
+def train():
+    model.train()
+
+    total_loss = total_nodes = 0
+    for batch in train_loader:
+        batch = batch.to(device)
+        optimizer.zero_grad()
+        out = model(batch.x, batch.edge_index)
+        loss = F.nll_loss(out[batch.train_mask], batch.y[batch.train_mask])
+        loss.backward()
+        optimizer.step()
+
+        nodes = batch.train_mask.sum().item()
+        total_loss += loss.item() * nodes
+        total_nodes += nodes
+
+    return total_loss / total_nodes
+
+
+@torch.no_grad()
+def test():  # Inference should be performed on the full graph.
+    model.eval()
+
+    out = model.inference(data.x)
+    y_pred = out.argmax(dim=-1)
+
+    accs = []
+    for mask in [data.train_mask, data.val_mask, data.test_mask]:
+        correct = y_pred[mask].eq(data.y[mask]).sum().item()
+        accs.append(correct / mask.sum().item())
+    return accs
+
+
+
+
+dataset = Reddit('./data/Reddit')
+data = dataset[0]
+num_clusters = [500, 1000,1500, 2000]
+result = {"num_cluster":[],"partition_t":[],"train_t":[],"train_acc":[] ,"val_acc":[],"test_acc":[]}
+for num_part in num_clusters:
+    print(f"Using num cluster: {num_part}")
+    
+    start_t = time.time()
+    cluster_data = ClusterData(data, num_parts=num_part, recursive=False,
+                               save_dir=dataset.processed_dir)
+    end_t = time.time()
+    partition_t =end_t - start_t
+    print(f"Partition Time: {partition_t} s")
+    train_loader = ClusterLoader(cluster_data, batch_size=20, shuffle=True,
+                                 num_workers=12)
+
+    subgraph_loader = NeighborSampler(data.edge_index, sizes=[-1], batch_size=1024,
+                                      shuffle=False, num_workers=12)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = ClusterGCNNet(dataset.num_features, dataset.num_classes,hidden_dim= 128,num_layers=2).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
+
+    start_t = time.time()
+    for epoch in range(1, 31):
+        loss = train()
+        if epoch % 5 == 0:
+            train_acc, val_acc, test_acc = test()
+            print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}, Train: {train_acc:.4f}, '
+                  f'Val: {val_acc:.4f}, test: {test_acc:.4f}')
+        else:
+            print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}')
+    end_t = time.time()
+    train_t =end_t - start_t
+    train_t = datetime.timedelta(seconds=train_t)
+    print(f"Training Time: {train_t} s")
+    result["num_cluster"].append(num_part)
+    result['partition_t'].append(partition_t)
+    result['train_t'].append(train_t)
+    result["train_acc"].append(train_acc) 
+    result["val_acc"].append(val_acc)
+    result["test_acc"].append(test_acc)
+    
+df_result= pd.DataFrame(result)
+df_result
+```
+
+    Using num cluster: 500
+    Partition Time: 1.7125461101531982 s
+
+
+    /home/wenkanw/.conda/envs/mlenv/lib/python3.8/site-packages/torch/utils/data/dataloader.py:474: UserWarning: This DataLoader will create 12 worker processes in total. Our suggested max number of worker in current system is 8, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+      warnings.warn(_create_warning_msg(
+
+
+    Epoch: 01, Loss: 1.8346
+    Epoch: 02, Loss: 0.6928
+    Epoch: 03, Loss: 0.4838
+    Epoch: 04, Loss: 0.4009
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:57<00:00, 8127.96it/s] 
+
+    Epoch: 05, Loss: 0.3632, Train: 0.9541, Val: 0.9542, test: 0.9531
+
+
+    
+
+
+    Epoch: 06, Loss: 0.3425
+    Epoch: 07, Loss: 0.3161
+    Epoch: 08, Loss: 0.3140
+    Epoch: 09, Loss: 0.3006
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:56<00:00, 8212.24it/s] 
+
+    Epoch: 10, Loss: 0.2787, Train: 0.9637, Val: 0.9586, test: 0.9571
+
+
+    
+
+
+    Epoch: 11, Loss: 0.2684
+    Epoch: 12, Loss: 0.2558
+    Epoch: 13, Loss: 0.2522
+    Epoch: 14, Loss: 0.2455
+
+
+    Evaluating: 100%|██████████| 465930/465930 [01:00<00:00, 7730.12it/s] 
+
+    Epoch: 15, Loss: 0.2421, Train: 0.9667, Val: 0.9577, test: 0.9565
+
+
+    
+
+
+    Epoch: 16, Loss: 0.2649
+    Epoch: 17, Loss: 0.2377
+    Epoch: 18, Loss: 0.2277
+    Epoch: 19, Loss: 0.2190
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:54<00:00, 8495.90it/s] 
+
+    Epoch: 20, Loss: 0.2151, Train: 0.9698, Val: 0.9568, test: 0.9559
+
+
+    
+
+
+    Epoch: 21, Loss: 0.2138
+    Epoch: 22, Loss: 0.2101
+    Epoch: 23, Loss: 0.2084
+    Epoch: 24, Loss: 0.2062
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:58<00:00, 7914.75it/s] 
+
+    Epoch: 25, Loss: 0.2057, Train: 0.9713, Val: 0.9558, test: 0.9545
+
+
+    
+
+
+    Epoch: 26, Loss: 0.2061
+    Epoch: 27, Loss: 0.2097
+    Epoch: 28, Loss: 0.2099
+    Epoch: 29, Loss: 0.2035
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:59<00:00, 7891.56it/s] 
+
+
+    Epoch: 30, Loss: 0.1938, Train: 0.9736, Val: 0.9567, test: 0.9560
+    Training Time: 0:09:43.498993 s
+    Using num cluster: 1000
+    Partition Time: 3.144443988800049 s
+    Epoch: 01, Loss: 1.4359
+    Epoch: 02, Loss: 0.5340
+    Epoch: 03, Loss: 0.4172
+    Epoch: 04, Loss: 0.3630
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:58<00:00, 7984.94it/s] 
+
+    Epoch: 05, Loss: 0.3458, Train: 0.9358, Val: 0.9350, test: 0.9327
+
+
+    
+
+
+    Epoch: 06, Loss: 0.3326
+    Epoch: 07, Loss: 0.3068
+    Epoch: 08, Loss: 0.2879
+    Epoch: 09, Loss: 0.2861
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:59<00:00, 7885.83it/s] 
+
+    Epoch: 10, Loss: 0.2757, Train: 0.9618, Val: 0.9536, test: 0.9506
+
+
+    
+
+
+    Epoch: 11, Loss: 0.2700
+    Epoch: 12, Loss: 0.2535
+    Epoch: 13, Loss: 0.2523
+    Epoch: 14, Loss: 0.2461
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:59<00:00, 7813.02it/s] 
+
+    Epoch: 15, Loss: 0.2412, Train: 0.9688, Val: 0.9568, test: 0.9548
+
+
+    
+
+
+    Epoch: 16, Loss: 0.2470
+    Epoch: 17, Loss: 0.2456
+    Epoch: 18, Loss: 0.2403
+    Epoch: 19, Loss: 0.2296
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:54<00:00, 8482.81it/s] 
+
+    Epoch: 20, Loss: 0.2284, Train: 0.9696, Val: 0.9546, test: 0.9545
+
+
+    
+
+
+    Epoch: 21, Loss: 0.2276
+    Epoch: 22, Loss: 0.2219
+    Epoch: 23, Loss: 0.2224
+    Epoch: 24, Loss: 0.2233
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:57<00:00, 8037.32it/s] 
+
+    Epoch: 25, Loss: 0.2241, Train: 0.9698, Val: 0.9533, test: 0.9520
+
+
+    
+
+
+    Epoch: 26, Loss: 0.2226
+    Epoch: 27, Loss: 0.2129
+    Epoch: 28, Loss: 0.2171
+    Epoch: 29, Loss: 0.2312
+
+
+    Evaluating: 100%|██████████| 465930/465930 [00:58<00:00, 7972.01it/s] 
+
+
+    Epoch: 30, Loss: 0.2149, Train: 0.9739, Val: 0.9559, test: 0.9539
+    Training Time: 0:09:46.712217 s
+    Using num cluster: 1500
+    Partition Time: 1.5299558639526367 s
+    Epoch: 01, Loss: 1.1529
+    Epoch: 02, Loss: 0.4863
+    Epoch: 03, Loss: 0.3942
+    Epoch: 04, Loss: 0.3567
+
+
+    Evaluating: 100%|██████████| 465930/465930 [01:00<00:00, 7716.31it/s] 
+
+    Epoch: 05, Loss: 0.3439, Train: 0.9559, Val: 0.9524, test: 0.9513
+
+
+    
+
+
+    Epoch: 06, Loss: 0.3230
+    Epoch: 07, Loss: 0.3062
+    Epoch: 08, Loss: 0.3013
+    Epoch: 09, Loss: 0.3049
+
+
+    Evaluating: 100%|██████████| 465930/465930 [01:00<00:00, 7741.65it/s] 
+
+    Epoch: 10, Loss: 0.2984, Train: 0.9609, Val: 0.9518, test: 0.9501
+
+
+    
+
+
+    Epoch: 11, Loss: 0.2839
+    Epoch: 12, Loss: 0.2775
+    Epoch: 13, Loss: 0.2720
+    Epoch: 14, Loss: 0.2701
+
+
+    Evaluating: 100%|██████████| 465930/465930 [01:01<00:00, 7567.86it/s] 
+
+    Epoch: 15, Loss: 0.2634, Train: 0.9633, Val: 0.9513, test: 0.9495
+
+
+    
+
+
+    Epoch: 16, Loss: 0.2851
+    Epoch: 17, Loss: 0.2721
+    Epoch: 18, Loss: 0.2635
+    Epoch: 19, Loss: 0.2489
+
+
+    Evaluating: 100%|██████████| 465930/465930 [01:00<00:00, 7680.40it/s] 
+
+    Epoch: 20, Loss: 0.2617, Train: 0.9645, Val: 0.9495, test: 0.9494
+
+
+    
+
+
+    Epoch: 21, Loss: 0.2517
+    Epoch: 22, Loss: 0.2424
+    Epoch: 23, Loss: 0.2411
+    Epoch: 24, Loss: 0.2370
+
+
+    Evaluating: 100%|██████████| 465930/465930 [01:00<00:00, 7762.74it/s] 
+
+    Epoch: 25, Loss: 0.2379, Train: 0.9702, Val: 0.9521, test: 0.9517
+
+
+    
+
+
+    Epoch: 26, Loss: 0.2414
+    Epoch: 27, Loss: 0.2358
+    Epoch: 28, Loss: 0.2325
+    Epoch: 29, Loss: 0.2406
+
+
+    Evaluating: 100%|██████████| 465930/465930 [01:00<00:00, 7753.34it/s] 
+
+
+    Epoch: 30, Loss: 0.2327, Train: 0.9633, Val: 0.9450, test: 0.9433
+    Training Time: 0:10:01.358439 s
+    Using num cluster: 2000
+    Computing METIS partitioning...
+    Done!
+    Partition Time: 298.0074031352997 s
+
+
+
+    ---------------------------------------------------------------------------
+
+    OSError                                   Traceback (most recent call last)
+
+    <ipython-input-1-655da094f6f8> in <module>
+        162     start_t = time.time()
+        163     for epoch in range(1, 31):
+    --> 164         loss = train()
+        165         if epoch % 5 == 0:
+        166             train_acc, val_acc, test_acc = test()
+
+
+    <ipython-input-1-655da094f6f8> in train()
+        106 
+        107     total_loss = total_nodes = 0
+    --> 108     for batch in train_loader:
+        109         batch = batch.to(device)
+        110         optimizer.zero_grad()
+
+
+    ~/.conda/envs/mlenv/lib/python3.8/site-packages/torch/utils/data/dataloader.py in __iter__(self)
+        353             return self._iterator
+        354         else:
+    --> 355             return self._get_iterator()
+        356 
+        357     @property
+
+
+    ~/.conda/envs/mlenv/lib/python3.8/site-packages/torch/utils/data/dataloader.py in _get_iterator(self)
+        299         else:
+        300             self.check_worker_number_rationality()
+    --> 301             return _MultiProcessingDataLoaderIter(self)
+        302 
+        303     @property
+
+
+    ~/.conda/envs/mlenv/lib/python3.8/site-packages/torch/utils/data/dataloader.py in __init__(self, loader)
+        912             #     before it starts, and __del__ tries to join but will get:
+        913             #     AssertionError: can only join a started process.
+    --> 914             w.start()
+        915             self._index_queues.append(index_queue)
+        916             self._workers.append(w)
+
+
+    ~/.conda/envs/mlenv/lib/python3.8/multiprocessing/process.py in start(self)
+        119                'daemonic processes are not allowed to have children'
+        120         _cleanup()
+    --> 121         self._popen = self._Popen(self)
+        122         self._sentinel = self._popen.sentinel
+        123         # Avoid a refcycle if the target function holds an indirect
+
+
+    ~/.conda/envs/mlenv/lib/python3.8/multiprocessing/context.py in _Popen(process_obj)
+        222     @staticmethod
+        223     def _Popen(process_obj):
+    --> 224         return _default_context.get_context().Process._Popen(process_obj)
+        225 
+        226 class DefaultContext(BaseContext):
+
+
+    ~/.conda/envs/mlenv/lib/python3.8/multiprocessing/context.py in _Popen(process_obj)
+        275         def _Popen(process_obj):
+        276             from .popen_fork import Popen
+    --> 277             return Popen(process_obj)
+        278 
+        279     class SpawnProcess(process.BaseProcess):
+
+
+    ~/.conda/envs/mlenv/lib/python3.8/multiprocessing/popen_fork.py in __init__(self, process_obj)
+         17         self.returncode = None
+         18         self.finalizer = None
+    ---> 19         self._launch(process_obj)
+         20 
+         21     def duplicate_for_child(self, fd):
+
+
+    ~/.conda/envs/mlenv/lib/python3.8/multiprocessing/popen_fork.py in _launch(self, process_obj)
+         68         parent_r, child_w = os.pipe()
+         69         child_r, parent_w = os.pipe()
+    ---> 70         self.pid = os.fork()
+         71         if self.pid == 0:
+         72             try:
+
+
+    OSError: [Errno 12] Cannot allocate memory
+
+
+### 3.3 Result
+这里因为训练时我尝试了不同的cluster的数目，但是都是试了3种不同cluster数目之后就内存溢出，所以这里我尝试跑了2次，分别对比500,1000,1500以及1000,1500,2000两种情况。可以看到随着cluster数目的增多 test accuracy的的变化是先大后小，而且变化的幅度不大一般都在1%左右
+
+
+```python
+df_result = pd.DataFrame(result)
+df_result
+```
+
+
+
+
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>num_cluster</th>
+      <th>partition_t</th>
+      <th>train_t</th>
+      <th>train_acc</th>
+      <th>val_acc</th>
+      <th>test_acc</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>500</td>
+      <td>1.712546</td>
+      <td>0 days 00:09:43.498993</td>
+      <td>0.973591</td>
+      <td>0.956695</td>
+      <td>0.955999</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>1000</td>
+      <td>3.144444</td>
+      <td>0 days 00:09:46.712217</td>
+      <td>0.973949</td>
+      <td>0.955898</td>
+      <td>0.953916</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>1500</td>
+      <td>1.529956</td>
+      <td>0 days 00:10:01.358439</td>
+      <td>0.963299</td>
+      <td>0.945030</td>
+      <td>0.943306</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+
+```python
+pd.DataFrame(result)
+```
+
+
+
+
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>num_cluster</th>
+      <th>partition_t</th>
+      <th>train_t</th>
+      <th>train_acc</th>
+      <th>val_acc</th>
+      <th>test_acc</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>2000</td>
+      <td>2.519914</td>
+      <td>0 days 00:04:56.476637</td>
+      <td>0.966519</td>
+      <td>0.948219</td>
+      <td>0.947866</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>1500</td>
+      <td>3.753822</td>
+      <td>0 days 00:06:28.267962</td>
+      <td>0.971231</td>
+      <td>0.953674</td>
+      <td>0.952803</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>1000</td>
+      <td>2.336999</td>
+      <td>0 days 00:07:26.611871</td>
+      <td>0.971479</td>
+      <td>0.951534</td>
+      <td>0.950075</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+
 ## 4. Conclusion and Take-away
 + ClusterGCN的成果
     - 对不同的batch，graph partition的方法进行研究
