@@ -509,6 +509,7 @@ neg_edge_index = negative_sampling(
 [3] https://pytorch-geometric.readthedocs.io/en/latest/modules/nn.html
 [4] https://medium.com/neo4j/link-prediction-with-neo4j-part-1-an-introduction-713aa779fd9
 [5] https://www.analyticsvidhya.com/blog/2020/01/link-prediction-how-to-predict-your-future-connections-on-facebook/
+[6] Plantoid数据集： https://github.com/kimiyoung/planetoid/tree/master/data
 
 
 ```python

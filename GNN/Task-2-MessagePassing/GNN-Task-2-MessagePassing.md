@@ -83,8 +83,8 @@ Pytorch Geometric(PyG)提供了MessagePassing基类，它封装了“消息传�
 propagate 函数的输入 有edge_index, x (node embedding matrix), 以及其他自定义的输入参数(degree, norm之类的)。其中edge_index的储存形式如下
 $$
 \mathbf{Edge index}=[\begin{array}{lllll}
-    [0 & 0& 1& 4&..8] \\
-    [0& 1& 4& 1& ..9] \\
+    [0 & 0& 1& 4&..8] \\\\
+    [0& 1& 4& 1& ..9] \\\\
     \end{array}]
 $$
 其中Edge_index的shape = [2, amount of edge]. Edge_index[0]第一行是source node的index， Edge_index[1]第二行是target node的index. 
