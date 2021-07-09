@@ -501,67 +501,6 @@ def test(data, model):  # Inference should be performed on the full graph.
 ```
 
 
-```python
-import pandas as pd
-import time
-import datetime
-# def test_num_parts(data, num_partitions = [500, 1000, 1500,2000],num_layers=2):
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-for cnt in range(1):
-    num_partitions = [1000, 1500,2000]
-    num_layers=2
-    torch.manual_seed(2019)
-    result = {"num_cluster":[],"partition_t":[],"train_t":[],"train_acc":[] ,"val_acc":[],"test_acc":[]}
-    
-    for num_part in num_partitions:
-        
-        
-        print(f"Testing number of cluster:{num_part}")
-        model = ClusterGCNNet(dataset.num_features, dataset.num_classes,num_layers=num_layers).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
-        # 如果recursive = True， 它会自动用多层的二分法进行partition而不是多层k-way 分法，这样会比multilevel k-way 要慢
-        # 可以参考paper: http://glaros.dtc.umn.edu/gkhome/node/81
-        
-        start_t = time.time()
-        cluster_gnn_data = ClusterData(data, num_parts =num_part, recursive=False, save_dir = dataset.processed_dir )
-        end_t = time.time()
-        partition_t =end_t - start_t
-        print(f"Partition Time: {partition_t} s")
-
-        
-        train_loader = ClusterLoader(cluster_gnn_data, batch_size= 20, shuffle= True, num_workers= 16)
-
-        # 采样子图的edges， 这里subgraph_loader 用于 testing里面 取样子图来测试model的infernece
-        subgraph_loader = NeighborSampler(data.edge_index, sizes = [-1], shuffle=False,num_workers=16)
-
-        start_t = time.time()
-        for epoch in range(1, 31):
-            loss = train(model,optimizer)
-            if epoch % 5 == 0:
-                train_acc, val_acc, test_acc = test(data, model)
-                print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}, Train: {train_acc:.4f}, '
-                      f'Val: {val_acc:.4f}, test: {test_acc:.4f}')
-            else:
-                print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}')
-        end_t = time.time()
-        train_t =end_t - start_t
-        train_t = datetime.timedelta(seconds=train_t)
-        print(f"Training Time: {train_t} s")
-        
-        result["num_cluster"].append(num_part)
-        result['partition_t'].append(partition_t)
-        result['train_t'].append(train_t)
-        result["train_acc"].append(train_acc) 
-        result["val_acc"].append(val_acc)
-        result["test_acc"].append(test_acc)
-        
-        torch.cuda.empty_cache()
-        del model
-        #return result, pd.DataFrame(result)
-df_res= pd.DataFrame(result)
-df_res
-```
-
 
 ```python
 
@@ -756,11 +695,6 @@ df_result
 
     Using num cluster: 500
     Partition Time: 1.7125461101531982 s
-
-
-    /home/wenkanw/.conda/envs/mlenv/lib/python3.8/site-packages/torch/utils/data/dataloader.py:474: UserWarning: This DataLoader will create 12 worker processes in total. Our suggested max number of worker in current system is 8, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-      warnings.warn(_create_warning_msg(
-
 
     Epoch: 01, Loss: 1.8346
     Epoch: 02, Loss: 0.6928
@@ -1015,92 +949,6 @@ df_result
     Partition Time: 298.0074031352997 s
 
 
-
-    ---------------------------------------------------------------------------
-
-    OSError                                   Traceback (most recent call last)
-
-    <ipython-input-1-655da094f6f8> in <module>
-        162     start_t = time.time()
-        163     for epoch in range(1, 31):
-    --> 164         loss = train()
-        165         if epoch % 5 == 0:
-        166             train_acc, val_acc, test_acc = test()
-
-
-    <ipython-input-1-655da094f6f8> in train()
-        106 
-        107     total_loss = total_nodes = 0
-    --> 108     for batch in train_loader:
-        109         batch = batch.to(device)
-        110         optimizer.zero_grad()
-
-
-    ~/.conda/envs/mlenv/lib/python3.8/site-packages/torch/utils/data/dataloader.py in __iter__(self)
-        353             return self._iterator
-        354         else:
-    --> 355             return self._get_iterator()
-        356 
-        357     @property
-
-
-    ~/.conda/envs/mlenv/lib/python3.8/site-packages/torch/utils/data/dataloader.py in _get_iterator(self)
-        299         else:
-        300             self.check_worker_number_rationality()
-    --> 301             return _MultiProcessingDataLoaderIter(self)
-        302 
-        303     @property
-
-
-    ~/.conda/envs/mlenv/lib/python3.8/site-packages/torch/utils/data/dataloader.py in __init__(self, loader)
-        912             #     before it starts, and __del__ tries to join but will get:
-        913             #     AssertionError: can only join a started process.
-    --> 914             w.start()
-        915             self._index_queues.append(index_queue)
-        916             self._workers.append(w)
-
-
-    ~/.conda/envs/mlenv/lib/python3.8/multiprocessing/process.py in start(self)
-        119                'daemonic processes are not allowed to have children'
-        120         _cleanup()
-    --> 121         self._popen = self._Popen(self)
-        122         self._sentinel = self._popen.sentinel
-        123         # Avoid a refcycle if the target function holds an indirect
-
-
-    ~/.conda/envs/mlenv/lib/python3.8/multiprocessing/context.py in _Popen(process_obj)
-        222     @staticmethod
-        223     def _Popen(process_obj):
-    --> 224         return _default_context.get_context().Process._Popen(process_obj)
-        225 
-        226 class DefaultContext(BaseContext):
-
-
-    ~/.conda/envs/mlenv/lib/python3.8/multiprocessing/context.py in _Popen(process_obj)
-        275         def _Popen(process_obj):
-        276             from .popen_fork import Popen
-    --> 277             return Popen(process_obj)
-        278 
-        279     class SpawnProcess(process.BaseProcess):
-
-
-    ~/.conda/envs/mlenv/lib/python3.8/multiprocessing/popen_fork.py in __init__(self, process_obj)
-         17         self.returncode = None
-         18         self.finalizer = None
-    ---> 19         self._launch(process_obj)
-         20 
-         21     def duplicate_for_child(self, fd):
-
-
-    ~/.conda/envs/mlenv/lib/python3.8/multiprocessing/popen_fork.py in _launch(self, process_obj)
-         68         parent_r, child_w = os.pipe()
-         69         child_r, parent_w = os.pipe()
-    ---> 70         self.pid = os.fork()
-         71         if self.pid == 0:
-         72             try:
-
-
-    OSError: [Errno 12] Cannot allocate memory
 
 
 ### 3.3 Result
